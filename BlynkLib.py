@@ -236,8 +236,8 @@ class Blynk(BlynkProtocol):
                 ssl_context = ussl
             except ImportError:
                 import ssl
-                ssl_context = ssl.create_default_context()
-            self.conn = ssl_context.wrap_socket(s, server_hostname=self.server)
+                #ssl_context = ssl.create_default_context() // this is not exists in Micropython 1.25 and 1.26 i guess
+            self.conn = ssl.wrap_socket(s, server_hostname=self.server)
         try:
             self.conn.settimeout(SOCK_TIMEOUT)
         except:
@@ -262,4 +262,3 @@ class Blynk(BlynkProtocol):
         except: # TODO: handle disconnect
             return
         self.process(data)
-
