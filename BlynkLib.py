@@ -73,11 +73,12 @@ class BlynkProtocol(EventEmitter):
         EventEmitter.__init__(self)
         self.heartbeat = heartbeat*1000
         self.buffin = buffin
-        self.log = log or dummy
+        self.log = log or print # Changed default to print for better debugging
         self.auth = auth
         self.tmpl_id = tmpl_id
         self.fw_ver = fw_ver
         self.state = DISCONNECTED
+        self.conn = None # Add conn attribute to base class
         self.connect()
 
     def virtual_write(self, pin, *val):
@@ -96,6 +97,10 @@ class BlynkProtocol(EventEmitter):
         self._send(MSG_EVENT_LOG, *val)
 
     def _send(self, cmd, *args, **kwargs):
+        if self.state != CONNECTED:
+             self.log('Skip send: not connected')
+             return
+             
         if 'id' in kwargs:
             id = kwargs.get('id')
         else:
@@ -129,13 +134,34 @@ class BlynkProtocol(EventEmitter):
         self.bin = b""
         self.state = DISCONNECTED
         self.emit('disconnected')
+        self.log('Disconnected.')
+        # NEW: Close the socket connection
+        if self.conn:
+            try:
+                self.conn.close()
+            except:
+                pass
+            self.conn = None
 
     def process(self, data=None):
+        # NEW: Auto-reconnect logic
+        if self.state == DISCONNECTED:
+            self.log('Trying to reconnect...')
+            self.connect()
+            return # Wait for next cycle
+            
         if not (self.state == CONNECTING or self.state == CONNECTED): return
+        
         now = gettime()
+        
+        # Heartbeat check
         if now - self.lastRecv > self.heartbeat+(self.heartbeat//2):
+            self.log('Heartbeat timeout.')
             return self.disconnect()
+        
+        # Ping check
         if (now - self.lastPing > self.heartbeat//10 and
+            self.state == CONNECTED and # Only ping if fully connected
             (now - self.lastSend > self.heartbeat or
              now - self.lastRecv > self.heartbeat)):
             self._send(MSG_PING)
@@ -149,7 +175,9 @@ class BlynkProtocol(EventEmitter):
                 break
 
             cmd, i, dlen = struct.unpack("!BHH", self.bin[:5])
-            if i == 0: return self.disconnect()
+            if i == 0: 
+                self.log('Invalid message ID.')
+                return self.disconnect()
                       
             self.lastRecv = now
             if cmd == MSG_RSP:
@@ -171,20 +199,21 @@ class BlynkProtocol(EventEmitter):
                             self.emit('connected', ping=dt)
                         except TypeError:
                             self.emit('connected')
+                        self.log('Connected!')
                     else:
                         if dlen == STA_INVALID_TOKEN:
                             self.emit("invalid_auth")
-                            print("Invalid auth token")
+                            self.log("Invalid auth token")
                         return self.disconnect()
             else:
                 if dlen >= self.buffin:
-                    print("Cmd too big: ", dlen)
+                    self.log("Cmd too big: ", dlen)
                     return self.disconnect()
 
                 if len(self.bin) < 5+dlen:
                     break
 
-                data = self.bin[5:5+dlen]
+                data = self.bin[5:5+dlen:]
                 self.bin = self.bin[5+dlen:]
 
                 args = list(map(lambda x: x.decode('utf8'), data.split(b'\0')))
@@ -201,7 +230,7 @@ class BlynkProtocol(EventEmitter):
                 elif cmd == MSG_REDIRECT:
                     self.emit("redirect", args[0], int(args[1]))
                 else:
-                    print("Unexpected command: ", cmd)
+                    self.log("Unexpected command: ", cmd)
                     return self.disconnect()
 
 import socket
@@ -218,47 +247,75 @@ class Blynk(BlynkProtocol):
         self.server = server
         self.port = port
         self.disconnect()
-        self.connect()
+        # Reconnect will happen automatically in process()
 
     def connect(self):
-        print('Connecting to %s:%d...' % (self.server, self.port))
-        s = socket.socket()
-        s.connect(socket.getaddrinfo(self.server, self.port)[0][-1])
+        # NEW: Prevent re-entry if already connecting
+        if self.state == CONNECTING:
+            return
+            
+        self.log('Connecting to %s:%d...' % (self.server, self.port))
+        
+        # NEW: Wrap entire connection in try/except
         try:
-            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        except:
-            pass
-        if self.insecure:
-            self.conn = s
-        else:
+            s = socket.socket()
+            s.connect(socket.getaddrinfo(self.server, self.port)[0][-1])
             try:
-                import ussl
-                ssl_context = ussl
-            except ImportError:
-                import ssl
-                #ssl_context = ssl.create_default_context() // this is not exists in Micropython 1.25 and 1.26 i guess
-            self.conn = ssl.wrap_socket(s, server_hostname=self.server)
-        try:
-            self.conn.settimeout(SOCK_TIMEOUT)
-        except:
-            s.settimeout(SOCK_TIMEOUT)
-        BlynkProtocol.connect(self)
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except:
+                pass
+            
+            if self.insecure:
+                self.conn = s
+            else:
+                try:
+                    import ussl
+                    ssl_context = ussl
+                except ImportError:
+                    import ssl
+                    ssl_context = ssl
+                self.conn = ssl_context.wrap_socket(s, server_hostname=self.server)
+            
+            try:
+                self.conn.settimeout(SOCK_TIMEOUT)
+            except:
+                s.settimeout(SOCK_TIMEOUT)
+            
+            # Call base protocol connect ONLY if socket connection was successful
+            BlynkProtocol.connect(self)
+            
+        except Exception as e:
+            self.log('Error connecting:', str(e))
+            self.state = DISCONNECTED # Ensure we are marked as disconnected
+            # Wait before retrying so we don't spam
+            time.sleep(5) 
 
     def _write(self, data):
         #print('<', data)
-        self.conn.write(data)
-        # TODO: handle disconnect
+        try:
+            self.conn.write(data)
+        except Exception as e:
+            # Handle write error (e.g., connection dropped)
+            self.log('Write error:', str(e))
+            self.disconnect()
 
     def run(self):
         data = b''
         try:
-            data = self.conn.read(self.buffin)
+            # Check if connection exists before reading
+            if self.conn:
+                data = self.conn.read(self.buffin)
             #print('>', data)
         except KeyboardInterrupt:
-            raise
+            raise # Allow user to stop the program
         except socket.timeout:
-            # No data received, call process to send ping messages when needed
+            # No data received, this is normal
             pass
-        except: # TODO: handle disconnect
-            return
+        except Exception as e: 
+            # NEW: Catch other errors (e.g. connection reset)
+            self.log('Read error:', str(e))
+            self.disconnect() # Force disconnect, process() will reconnect
+            return # Skip processing this cycle
+            
+        # process() will handle pings, data, and reconnect logic
         self.process(data)
