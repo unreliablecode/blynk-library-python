@@ -97,7 +97,7 @@ class BlynkProtocol(EventEmitter):
         self._send(MSG_EVENT_LOG, *val)
 
     def _send(self, cmd, *args, **kwargs):
-        if self.state != CONNECTED:
+        if self.state == DISCONNECTED: # fixed stupid mistake
              self.log('Skip send: not connected')
              return
              
@@ -288,7 +288,10 @@ class Blynk(BlynkProtocol):
             self.log('Error connecting:', str(e))
             self.state = DISCONNECTED # Ensure we are marked as disconnected
             # Wait before retrying so we don't spam
-            time.sleep(5) 
+            print("network has lost we're going to reset the machine!")
+            print("Rebooting in 5 seconds...")
+            time.sleep(5)  # Add a delay to prevent a fast crash-reboot loop
+            machine.reset() # Perform a hard reset 
 
     def _write(self, data):
         #print('<', data)
@@ -308,7 +311,7 @@ class Blynk(BlynkProtocol):
             #print('>', data)
         except KeyboardInterrupt:
             raise # Allow user to stop the program
-        except socket.timeout:
+        except OSError:
             # No data received, this is normal
             pass
         except Exception as e: 
