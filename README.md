@@ -1,5 +1,5 @@
 > [!IMPORTANT]
-> **This project maintained in a weird way, dont expect to much!.**
+> **This project maintained in a weird way, dont expect too much!.**
 > trying my best to maintain it cause it like BlynkLib.
 
 # Python client for Blynk IoT
