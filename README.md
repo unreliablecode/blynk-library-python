@@ -1,8 +1,5 @@
 > [!IMPORTANT]
-> **This project is still available for exploration, but is no longer actively maintained or updated.**  
-> We recommend switching to the Blynk MQTT API for a robust and future-proof experience.  
-> Support for this project will be phased out over time.  
-> You can explore some [useful MQTT examples here](https://github.com/Blynk-Technologies/Blynk-MQTT-Samples).
+> **This project maintained in a weird way, dont expect to much!.**
 
 # Python client for Blynk IoT
 
